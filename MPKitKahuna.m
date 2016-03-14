@@ -1,7 +1,7 @@
 //
 //  MPKitKahuna.m
 //
-//  Copyright 2015 mParticle, Inc.
+//  Copyright 2016 mParticle, Inc.
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -16,10 +16,7 @@
 //  limitations under the License.
 //
 
-#if defined(MP_KIT_KAHUNA)
-
 #import "MPKitKahuna.h"
-#import "MPEnums.h"
 #import "MPEvent.h"
 #import "MPProduct.h"
 #import "MPProduct+Dictionary.h"
@@ -27,13 +24,14 @@
 #import "MPCommerceEvent+Dictionary.h"
 #import "MPTransactionAttributes.h"
 #import "MPPromotion.h"
-#import "KahunaAnalytics.h"
+#import "MPLogger.h"
+#import "mParticle.h"
+#import "MPKitRegister.h"
+#import <Kahuna/Kahuna.h>
 
 NSString *const khnSecretKey = @"secretKey";
-NSString *const khnEventListKey = @"eventList";
 NSString *const khnSendTransactionDataKey = @"sendTransactionData";
-NSString *const khnTransactionName = @"purchase";
-NSString *const khnEventAttributeListKey = @"eventAttributeList";
+NSString *const khnSdkWrapper = @"mParticle";
 
 @interface MPKitKahuna()
 
@@ -45,15 +43,24 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
 
 @implementation MPKitKahuna
 
++ (NSNumber *)kitCode {
+    return @56;
+}
+
++ (void)load {
+    MPKitRegister *kitRegister = [[MPKitRegister alloc] initWithName:@"Kahuna" className:@"MPKitKahuna" startImmediately:YES];
+    [MParticle registerExtension:kitRegister];
+}
+
 @synthesize defaultEventNames = _defaultEventNames;
 
 - (NSMutableDictionary *)defaultEventNames {
     if (_defaultEventNames) {
         return _defaultEventNames;
     }
-    
+
     _defaultEventNames = [[NSMutableDictionary alloc] init];
-    
+
     return _defaultEventNames;
 }
 
@@ -61,14 +68,14 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
     id sendTransactionData = configuration[khnSendTransactionDataKey];
     if (sendTransactionData) {
         if ([sendTransactionData isKindOfClass:[NSString class]]) {
-            _sendTransactions = [[(NSString *)sendTransactionData lowercaseString] isEqualToString:@"true"];
+            _sendTransactions = [(NSString *)sendTransactionData caseInsensitiveCompare:@"true"] == NSOrderedSame;
         } else {
             _sendTransactions = [sendTransactionData boolValue];
         }
     } else {
         _sendTransactions = NO;
     }
-    
+
     NSDictionary *mapOfKeyToEventType = @{@"defaultAddToCartEventName":@(MPEventTypeAddToCart),
                                           @"defaultRemoveFromCartEventName":@(MPEventTypeRemoveFromCart),
                                           @"defaultCheckoutEventName":@(MPEventTypeCheckout),
@@ -93,44 +100,43 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
 }
 
 - (void)setConfiguration:(NSDictionary *)configuration {
-    if (!started) {
+    if (!_started) {
         return;
     }
-    
-    [super setConfiguration:configuration];
-    
+
+    _configuration = configuration;
     [self setupWithConfiguration:configuration];
 }
 
 #pragma mark MPKitInstanceProtocol methods
-- (instancetype)initWithConfiguration:(NSDictionary *)configuration {
-    self = [super initWithConfiguration:configuration];
+- (instancetype)initWithConfiguration:(NSDictionary *)configuration startImmediately:(BOOL)startImmediately {
+    NSAssert(configuration != nil, @"Required parameter. It cannot be nil.");
+    self = [super init];
     if (!self) {
         return nil;
     }
-    
+
     if (!configuration[khnSecretKey]) {
         return nil;
     }
 
     [self setupWithConfiguration:configuration];
-    
-    [KahunaAnalytics launchWithKey:configuration[khnSecretKey]];
-    [KahunaAnalytics setDeepIntegrationMode:false];
-    
-    frameworkAvailable = YES;
-    started = YES;
-    self.forwardedEvents = YES;
-    self.active = YES;
+
+    [[Kahuna sharedInstance] performSelector:@selector(setSDKWrapper:withVersion:) withObject:khnSdkWrapper withObject:[MParticle sharedInstance].version];
+    [Kahuna launchWithKey:configuration[khnSecretKey]];
+    [Kahuna setDeepIntegrationMode:false];
+
+    _configuration = configuration;
+    _started = startImmediately;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSDictionary *userInfo = @{mParticleKitInstanceKey:@(MPKitInstanceKahuna),
-                                   mParticleEmbeddedSDKInstanceKey:@(MPKitInstanceKahuna)};
-        
+        NSDictionary *userInfo = @{mParticleKitInstanceKey:[[self class] kitCode],
+                                   mParticleEmbeddedSDKInstanceKey:[[self class] kitCode]};
+
         [[NSNotificationCenter defaultCenter] postNotificationName:mParticleKitDidBecomeActiveNotification
                                                             object:nil
                                                           userInfo:userInfo];
-        
+
         [[NSNotificationCenter defaultCenter] postNotificationName:mParticleEmbeddedSDKDidBecomeActiveNotification
                                                             object:nil
                                                           userInfo:userInfo];
@@ -140,22 +146,22 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
 }
 
 - (MPKitExecStatus *)beginLocationTracking:(CLLocationAccuracy)accuracy minDistance:(CLLocationDistance)distanceFilter {
-    [KahunaAnalytics enableLocationServices:KAHRegionMonitoringServices withReason:nil];
-    
+    [Kahuna enableLocationServices:KAHRegionMonitoringServices withReason:nil];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)endLocationTracking {
-    [KahunaAnalytics clearLocationServicesUserPermissions];
-    
+    [Kahuna disableLocationServices:KAHRegionMonitoringServices];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)failedToRegisterForUserNotifications:(NSError *)error {
-    [KahunaAnalytics handleNotificationRegistrationFailure:error];
-    
+    [Kahuna handleNotificationRegistrationFailure:error];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
@@ -163,136 +169,82 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
 - (MPKitExecStatus *)logCommerceEvent:(MPCommerceEvent *)commerceEvent {
     NSString *eventName = self.defaultEventNames[@(commerceEvent.type)];
     MPKitExecStatus *execStatus;
-    
+
     if (!eventName) {
         execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeRequirementsNotMet];
         return execStatus;
     }
-    
-    NSDictionary *userAttributes = [commerceEvent userDefinedAttributes];
+
     MPCommerceEventKind kindOfCommerceEvent = [commerceEvent kind];
-    
+    int sumQuantity = -1;
+    int revenueInCents = -1;
     switch (kindOfCommerceEvent) {
         case MPCommerceEventKindProduct:
             if (commerceEvent.action == MPCommerceEventActionPurchase) {
                 NSArray *products = [commerceEvent products];
-                int sumQuantity = 0;
-                
+
+                sumQuantity = 0;
                 for (MPProduct *product in products) {
                     sumQuantity += [product.quantity intValue];
                 }
-                
-                int revenueInCents = (int)floor([commerceEvent.transactionAttributes.revenue doubleValue] * 100);
-                [KahunaAnalytics trackEvent:eventName withCount:sumQuantity andValue:revenueInCents];
-            } else {
-                [KahunaAnalytics trackEvent:eventName];
+
+                revenueInCents = (int)floor([commerceEvent.transactionAttributes.revenue doubleValue] * 100);
             }
             break;
-            
+
         case MPCommerceEventKindImpression:
-            [KahunaAnalytics trackEvent:eventName];
-            break;
-            
         case MPCommerceEventKindPromotion:
-            [KahunaAnalytics trackEvent:eventName];
             break;
-            
+
         default:
             execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeUnavailable];
             return execStatus;
             break;
     }
-    
-    if (userAttributes.count > 0) {
-        [KahunaAnalytics setUserAttributes:userAttributes];
-    }
-    
+
+    [self trackKahunaEvent:eventName withCount:sumQuantity withValue:revenueInCents withProperties:[commerceEvent userDefinedAttributes]];
+
     execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)logEvent:(MPEvent *)event {
-    [KahunaAnalytics trackEvent:event.name];
-
-    if (event.info.count > 0) {
-        [KahunaAnalytics setUserAttributes:event.info];
-    }
-    
+    [self trackKahunaEvent:event.name withCount:-1 withValue:-1 withProperties:event.info];
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)logout {
-    [KahunaAnalytics logout];
-    
+    [Kahuna logout];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
-- (MPKitExecStatus *)logTransaction:(NSString *)productName affiliation:(NSString *)affiliation sku:(NSString *)sku unitPrice:(double)unitPrice quantity:(NSInteger)quantity revenueAmount:(double)revenueAmount taxAmount:(double)taxAmount shippingAmount:(double)shippingAmount transactionId:(NSString *)transactionId productCategory:(NSString *)productCategory currencyCode:(NSString *)currencyCode {
-    MPKitExecStatus *execStatus;
-
-    if (!_sendTransactions) {
-        execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeRequirementsNotMet];
-        return execStatus;
-    }
-
-    int revenueInCents = (int)floor(revenueAmount * 100);
-    [KahunaAnalytics trackEvent:khnTransactionName withCount:(int)quantity andValue:revenueInCents];
-    
-    execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
-    return execStatus;
-}
-
-- (MPKitExecStatus *)logTransaction:(MPProduct *)product {
-    MPKitExecStatus *execStatus;
-    
-    if (!_sendTransactions) {
-        execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeRequirementsNotMet];
-        return execStatus;
-    }
-    
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    double revenueAmount = product.totalAmount;
-    if (revenueAmount == 0.0) {
-        revenueAmount = [product.price doubleValue] * [product.quantity doubleValue] + product.shippingAmount + product.taxAmount;
-    }
-#pragma clang diagnostic pop
-    
-    int revenueInCents = (int)floor(revenueAmount * 100);
-    [KahunaAnalytics trackEvent:khnTransactionName withCount:(int)[product.quantity integerValue] andValue:revenueInCents];
-    
-    execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
-    return execStatus;
-}
-
 - (MPKitExecStatus *)receivedUserNotification:(NSDictionary *)userInfo {
-    [KahunaAnalytics handleNotification:userInfo withApplicationState:[UIApplication sharedApplication].applicationState];
-    
+    [Kahuna handleNotification:userInfo withApplicationState:[UIApplication sharedApplication].applicationState];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)setDeviceToken:(NSData *)deviceToken {
-    [KahunaAnalytics setDeviceToken:deviceToken];
-    
+    [Kahuna setDeviceToken:deviceToken];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)setDebugMode:(BOOL)debugMode {
-    kitDebugMode = debugMode;
-    
-    [KahunaAnalytics setDebugMode:debugMode];
-    
+    [Kahuna setDebugMode:debugMode];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
 - (MPKitExecStatus *)setUserAttribute:(NSString *)key value:(NSString *)value {
-    [KahunaAnalytics setUserAttributes:@{key:value}];
-    
+    [Kahuna setUserAttributes:@{key:value}];
+
     MPKitExecStatus *execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
@@ -303,42 +255,75 @@ NSString *const khnEventAttributeListKey = @"eventAttributeList";
         case MPUserIdentityCustomerId:
             kahunaCredential = KAHUNA_CREDENTIAL_USERNAME;
             break;
-            
+
         case MPUserIdentityEmail:
             kahunaCredential = KAHUNA_CREDENTIAL_EMAIL;
             break;
-            
+
         case MPUserIdentityFacebook:
             kahunaCredential = KAHUNA_CREDENTIAL_FACEBOOK;
             break;
-            
+
         case MPUserIdentityTwitter:
             kahunaCredential = KAHUNA_CREDENTIAL_TWITTER;
             break;
-            
-        case MPUserIdentityOther:
-            kahunaCredential = @"user_id";
+
+        case MPUserIdentityGoogle:
+            kahunaCredential = KAHUNA_CREDENTIAL_GOOGLE_PLUS;
             break;
-            
+
+        case MPUserIdentityFacebookCustomAudienceId:
+            kahunaCredential = @"fb_app_user_id";
+            break;
+
+        case MPUserIdentityMicrosoft:
+            kahunaCredential = @"msft_id";
+            break;
+
+        case MPUserIdentityYahoo:
+            kahunaCredential = @"yahoo_id";
+            break;
+
+        case MPUserIdentityOther:
+            kahunaCredential = @"mp_other_id";
+            break;
+
         default:
             break;
     }
-    
+
     MPKitExecStatus *execStatus;
-    
+
     if (!kahunaCredential) {
         execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeRequirementsNotMet];
         return execStatus;
     }
-    
+
     if (identityString) {
-        [KahunaAnalytics setUserCredentialsWithKey:kahunaCredential andValue:identityString];
+        KahunaUserCredentials *kuc = [Kahuna getUserCredentials];
+        [kuc addCredential:kahunaCredential withValue:identityString];
+        NSError *error = nil;
+        [Kahuna loginWithCredentials:kuc error:&error];
+        if (error) {
+            MPLogDebug(@"Kahuna Login Error : %@", error.description);
+        }
     }
-    
+
     execStatus = [[MPKitExecStatus alloc] initWithSDKCode:@(MPKitInstanceKahuna) returnCode:MPKitReturnCodeSuccess];
     return execStatus;
 }
 
-@end
+- (void) trackKahunaEvent:(NSString*)eventName withCount:(int)count withValue:(int)value withProperties:(NSDictionary*) properties {
+    if (!eventName) return;
 
-#endif
+    KAHEventBuilder *builder = [KAHEventBuilder eventWithName:eventName];
+    [builder setPurchaseCount:count andPurchaseValue:value];
+    for (NSString* eachKey in properties) {
+        NSString *eachValue = properties[eachKey];
+        [builder addProperty:eachKey withValue:eachValue];
+    }
+
+    [Kahuna track:[builder build]];
+}
+
+@end
