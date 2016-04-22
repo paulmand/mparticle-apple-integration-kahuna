@@ -17,4 +17,9 @@ Pod::Spec.new do |s|
     s.ios.source_files      = 'mParticle-Kahuna/*.{h,m,mm}'
     s.ios.dependency 'mParticle-Apple-SDK/mParticle', '~> 6.0'
     s.ios.dependency 'Kahuna', '2.3.3'
+
+    s.ios.pod_target_xcconfig = {
+        'FRAMEWORK_SEARCH_PATHS' => '$(inherited) $(PODS_ROOT)/Kahuna/**',
+        'OTHER_LDFLAGS' => '$(inherited) -framework "Kahuna"'
+    }
 end
